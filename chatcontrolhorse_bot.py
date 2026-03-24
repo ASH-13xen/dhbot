@@ -1,11 +1,13 @@
 import os
 import re
 import time
+import threading
+from flask import Flask
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
-from telegram.constants import MessageEntityType 
-from telegram.error import BadRequest # NEW: Needed to silently ignore invalid/user tags
+from telegram.constants import MessageEntityType
+from telegram.error import BadRequest
 from better_profanity import profanity
 
 # --- 1. SETUP & SECURITY ---
@@ -13,7 +15,7 @@ load_dotenv()
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 
 if not TOKEN:
-    raise ValueError("No token found! Make sure your .env file is set up correctly.")
+    raise ValueError("No token found! Make sure your .env file or Render Environment Variables are set up correctly.")
 
 # --- 2. CUSTOM WORD LISTS ---
 SPAM_WORDS = ['scam', 'crypto', 'fake', 'bitcoin', 'investment']
@@ -31,7 +33,6 @@ async def moderate_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """This function evaluates every new text/document message in the group."""
     message = update.message
 
-    # CHANGED: Removed "or not message.text" here so documents can pass through to the admin check
     if not message:
         return
 
@@ -42,15 +43,14 @@ async def moderate_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # --- RULE 1: ADMIN BYPASS ---
         chat_member = await context.bot.get_chat_member(chat_id, user_id)
         if chat_member.status in ['administrator', 'creator']:
-            return 
+            return
 
-        # --- RULE 1.5: ANTI-DOCUMENT CHECK (NEW) ---
+        # --- RULE 1.5: ANTI-DOCUMENT CHECK ---
         if message.document:
             await message.delete()
             print(f"Deleted a document/pdf from {message.from_user.first_name}")
             return
 
-        # Restoring the text check here for the remaining text-based rules
         if not message.text:
             return
 
@@ -70,7 +70,6 @@ async def moderate_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         # --- RULE 3: THE ULTIMATE LINK CHECKER ---
-        # Part A: Use Telegram's built-in detector to catch formatted links and hidden URLs
         if message.entities:
             for entity in message.entities:
                 if entity.type in [MessageEntityType.URL, MessageEntityType.TEXT_LINK]:
@@ -78,7 +77,6 @@ async def moderate_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     print(f"Deleted a hidden/formatted link from {message.from_user.first_name}")
                     return
 
-        # Part B: Upgraded Regex to catch sneaky t.me links just in case
         url_pattern = re.compile(r'http[s]?://|www\.|t\.me/|telegram\.me/|telegram\.dog/')
         if url_pattern.search(text_lower):
             await message.delete()
@@ -89,22 +87,14 @@ async def moderate_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if message.entities:
             for entity in message.entities:
                 if entity.type == MessageEntityType.MENTION:
-                    # Extract the exact @tag from the message
                     mention_text = message.text[entity.offset : entity.offset + entity.length]
-                    
                     try:
-                        # Ask Telegram what this tag actually is
                         chat_info = await context.bot.get_chat(mention_text)
-                        
-                        # If the tag points to a channel or group, nuke it!
                         if chat_info.type in ['channel', 'supergroup', 'group']:
                             await message.delete()
                             print(f"Deleted a channel/group mention ({mention_text}) from {message.from_user.first_name}")
                             return
-                            
                     except BadRequest:
-                        # If Telegram says "Chat not found" or "Bad Request", it's usually just a regular 
-                        # user the bot hasn't met, or a made-up tag. Let the message stay.
                         pass
 
         # --- RULE 5: BAD WORDS (English + Hindi) ---
@@ -122,14 +112,31 @@ async def moderate_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         print(f"Oops, an error occurred: {e}")
 
-if __name__ == '__main__':
-    print("Waking up the bot...")
-    
-    # Keeping your PythonAnywhere proxy settings perfectly intact!
-    app = Application.builder().token(TOKEN).proxy("http://proxy.server:3128").get_updates_proxy("http://proxy.server:3128").build()
 
-    # CHANGED: Added filters.Document.ALL so the handler actually catches PDFs and files
+# --- NEW: DUMMY WEB SERVER FOR RENDER ---
+web_app = Flask(__name__)
+
+@web_app.route('/')
+def home():
+    return "Bot is running beautifully!"
+
+def run_web():
+    # Render assigns a port dynamically via the PORT environment variable
+    port = int(os.environ.get("PORT", 10000))
+    web_app.run(host="0.0.0.0", port=port)
+
+
+if __name__ == '__main__':
+    print("Starting the dummy web server...")
+    # 1. Start the Flask server in a separate background thread
+    threading.Thread(target=run_web, daemon=True).start()
+
+    print("Waking up the bot...")
+    # 2. Set up your bot (PythonAnywhere proxy completely removed!)
+    app = Application.builder().token(TOKEN).build()
+    
     app.add_handler(MessageHandler((filters.TEXT | filters.Document.ALL) & ~filters.COMMAND, moderate_messages))
 
     print("Bot is alive and watching the chat! Press Ctrl+C to stop it.")
+    # 3. Run the polling loop in the main thread
     app.run_polling()
