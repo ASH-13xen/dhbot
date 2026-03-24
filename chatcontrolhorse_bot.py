@@ -22,15 +22,15 @@ SPAM_WORDS = ['scam', 'crypto', 'fake', 'bitcoin', 'investment']
 HINDI_SLANGS = ['kutta', 'saala', 'kaminey', 'gadha', 'paagal', 'lauda','lund','madhar','chod', 'lode', 'mkc','chutiye','bhadwe','fuckyou']
 
 # --- 3. ANTI-SPAM SETTINGS ---
-SPAM_LIMIT = 5       # Max messages allowed...
-SPAM_TIME = 10       # ...in this many seconds.
+SPAM_LIMIT = 1       # Max messages allowed...
+SPAM_TIME = 300      # ...in this many seconds (300s = 5 minutes).
 user_activity = {}   # The bot's memory for tracking message speed
 
 profanity.load_censor_words()
 profanity.add_censor_words(HINDI_SLANGS)
 
 async def moderate_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """This function evaluates every new text/document message in the group."""
+    """This function evaluates every new text/document/image message in the group."""
     message = update.message
 
     if not message:
@@ -51,12 +51,7 @@ async def moderate_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             print(f"Deleted a document/pdf from {message.from_user.first_name}")
             return
 
-        if not message.text:
-            return
-
-        text_lower = message.text.lower()
-
-        # --- RULE 2: ANTI-FLOOD CHECK ---
+        # --- RULE 2: ANTI-FLOOD CHECK (Moved up so images trigger the timer too) ---
         current_time = time.time()
         if user_id not in user_activity:
             user_activity[user_id] = []
@@ -69,9 +64,17 @@ async def moderate_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             print(f"Deleted spam flood from {message.from_user.first_name}")
             return
 
+        # Handle both regular text and image captions
+        msg_text = message.text or message.caption
+        if not msg_text:
+            return
+
+        text_lower = msg_text.lower()
+        msg_entities = message.entities or message.caption_entities
+
         # --- RULE 3: THE ULTIMATE LINK CHECKER ---
-        if message.entities:
-            for entity in message.entities:
+        if msg_entities:
+            for entity in msg_entities:
                 if entity.type in [MessageEntityType.URL, MessageEntityType.TEXT_LINK]:
                     await message.delete()
                     print(f"Deleted a hidden/formatted link from {message.from_user.first_name}")
@@ -84,10 +87,10 @@ async def moderate_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         # --- RULE 4: MENTION LOOKUP (CHANNEL/GROUP TAGS) ---
-        if message.entities:
-            for entity in message.entities:
+        if msg_entities:
+            for entity in msg_entities:
                 if entity.type == MessageEntityType.MENTION:
-                    mention_text = message.text[entity.offset : entity.offset + entity.length]
+                    mention_text = msg_text[entity.offset : entity.offset + entity.length]
                     try:
                         chat_info = await context.bot.get_chat(mention_text)
                         if chat_info.type in ['channel', 'supergroup', 'group']:
@@ -135,7 +138,8 @@ if __name__ == '__main__':
     # 2. Set up your bot (PythonAnywhere proxy completely removed!)
     app = Application.builder().token(TOKEN).build()
     
-    app.add_handler(MessageHandler((filters.TEXT | filters.Document.ALL) & ~filters.COMMAND, moderate_messages))
+    # CHANGED: Added filters.PHOTO so normal images are passed to the moderator
+    app.add_handler(MessageHandler((filters.TEXT | filters.Document.ALL | filters.PHOTO) & ~filters.COMMAND, moderate_messages))
 
     print("Bot is alive and watching the chat! Press Ctrl+C to stop it.")
     # 3. Run the polling loop in the main thread
